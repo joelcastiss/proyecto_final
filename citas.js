@@ -1,247 +1,124 @@
-﻿// ─── Supabase config (pacientes) ──────────────────────────
-// _pacientesCache, getPacientesCache() y getPacienteLocal()
-// ahora viven en shared.js para ser compartidos con historial y sala-espera.
-// Este archivo solo necesita las constantes para su propio uso si las requiere.
+/* ============================================================
+   MediCore — citas.js  (Supabase)
+   ============================================================ */
 
-const MEDICOS = {
-  'Medicina general': ['Dr. Carlos Ramos', 'Dra. Ana Torres', 'Dr. José Peña'],
-  'Pediatría':        ['Dra. Lucía Herrera', 'Dr. Marco Díaz'],
-  'Cardiología':      ['Dr. Eduardo Vela', 'Dra. Patricia Quispe'],
-  'Dermatología':     ['Dra. Sofía Lara', 'Dr. Andrés Castro'],
-  'Traumatología':    ['Dr. Luis Ramírez', 'Dr. Roberto Huanca'],
-  'Ginecología':      ['Dra. María Salinas', 'Dra. Carmen Huanca'],
-  'Odontología':      ['Dr. Jorge Soto', 'Dra. Fiorella Núñez'],
+const MEDICOS_POR_ESPECIALIDAD = {
+  'Medicina general': ['Dr. Carlos Ramírez', 'Dra. Lucía Torres', 'Dr. Andrés Vega'],
+  'Pediatría':        ['Dra. María Fuentes', 'Dr. José Herrera'],
+  'Cardiología':      ['Dr. Roberto Sánchez', 'Dra. Patricia Lozano'],
+  'Dermatología':     ['Dra. Sofía Mendoza', 'Dr. Diego Castro'],
+  'Traumatología':    ['Dr. Felipe Morales', 'Dra. Ana Quispe'],
+  'Ginecología':      ['Dra. Carmen Vargas', 'Dra. Valeria Reyes'],
+  'Odontología':      ['Dr. Miguel Álvarez', 'Dra. Isabel Paredes'],
 };
 
-const HORAS = Array.from({ length: 20 }, (_, i) => {
-  const h = Math.floor(i / 2) + 8;
-  const m = i % 2 === 0 ? '00' : '30';
-  return `${String(h).padStart(2, '0')}:${m}`;
-}).filter(h => { const [hh] = h.split(':'); return parseInt(hh) < 18; });
-
 document.addEventListener('DOMContentLoaded', async () => {
-  document.getElementById('cita-fecha').min = todayStr();
-  const sel = document.getElementById('cita-hora');
-  HORAS.forEach(h => {
-    const o = document.createElement('option');
-    o.value = o.textContent = h;
-    sel.appendChild(o);
-  });
-  // Precarga pacientes desde Supabase (función en shared.js)
-  await getPacientesCache();
+  await cargarDatosCitas();
+  generarHorarios();
   renderCitas();
   updateStats();
 });
 
-async function abrirNuevaCita() {
-  resetFormCita();
-  document.getElementById('modal-cita-title').textContent = 'Nueva Cita';
-  await cargarPacientesSelect();
-  openModal('modal-cita');
+async function cargarDatosCitas() {
+  try {
+    await Promise.all([getCitasCache(true), getPacientesCache()]);
+    poblarSelectPacientes();
+  } catch (e) {
+    console.error('Error cargando datos de citas:', e);
+    showToast('Error al conectar con la base de datos', 'error');
+  }
 }
 
-async function cargarPacientesSelect(selected = '') {
-  const sel = document.getElementById('cita-paciente');
-  sel.innerHTML = '<option value="">Cargando pacientes…</option>';
-  sel.disabled  = true;
-
-  const pacientes = await getPacientesCache();
-
-  sel.innerHTML = '<option value="">Seleccionar paciente…</option>';
-  sel.disabled  = false;
-
-  if (!pacientes.length) {
-    sel.innerHTML = '<option value="">No hay pacientes registrados</option>';
-    return;
-  }
-
-  pacientes.forEach(p => {
-    const codigo    = p.codigo ?? p.id;
-    const nombres   = p.nombres   ?? p.nombre   ?? '';
-    const apellidos = p.apellidos ?? p.apellido  ?? '';
-    const documento = p.documento ?? p.dni       ?? p.cedula ?? '';
+function poblarSelectPacientes() {
+  const pacs = getAllPacientes();
+  const sel  = document.getElementById('cita-paciente');
+  if (!sel) return;
+  // Limpiar excepto primer option
+  while (sel.options.length > 1) sel.remove(1);
+  pacs.forEach(p => {
     const o = document.createElement('option');
-    o.value       = codigo;
-    o.textContent = `${nombres} ${apellidos} — ${documento}`;
-    if (String(codigo) === String(selected)) o.selected = true;
+    o.value = String(p.id);
+    o.textContent = `${p.nombres} ${p.apellidos} — ${p.documento}`;
     sel.appendChild(o);
   });
 }
 
-function onEspecialidadChange() {
-  const esp = document.getElementById('cita-especialidad').value;
-  const sel  = document.getElementById('cita-medico');
-  sel.innerHTML = '';
-  if (!esp) { sel.innerHTML = '<option value="">Seleccione especialidad primero</option>'; return; }
-  sel.innerHTML = '<option value="">Seleccionar médico…</option>';
-  (MEDICOS[esp] || []).forEach(m => {
-    const o = document.createElement('option');
-    o.value = o.textContent = m;
-    sel.appendChild(o);
-  });
-  clearFieldError('cita-especialidad');
-}
-
-function onPacienteChange() {
-  const codigo = document.getElementById('cita-paciente').value;
-  const strip  = document.getElementById('pac-info-strip');
-  const bloque = document.getElementById('bloque-pac-info');
-  if (!codigo) { bloque.style.display = 'none'; return; }
-
-  const p = getPacienteLocal(codigo);
-  if (!p) { bloque.style.display = 'none'; return; }
-
-  const nombres   = p.nombres   ?? p.nombre   ?? '';
-  const apellidos = p.apellidos ?? p.apellido  ?? '';
-  const edad      = p.edad      ?? '—';
-  const telefono  = p.telefono  ?? p.celular   ?? '—';
-  const tipoDoc   = p.tipoDoc   ?? p.tipo_doc  ?? 'Doc';
-  const documento = p.documento ?? p.dni       ?? p.cedula ?? '—';
-  const alergias  = Array.isArray(p.alergias) ? p.alergias : [];
-  const alNoNing  = alergias.length && alergias[0] !== 'Ninguna';
-
-  strip.innerHTML = `
-    <div class="patient-info-strip">
-      <div class="pi-avatar">${(nombres[0] ?? '?')}${(apellidos[0] ?? '?')}</div>
-      <div class="pi-data">
-        <div class="pi-name">${nombres} ${apellidos}</div>
-        <div class="pi-meta">${edad} años · ${telefono} · ${tipoDoc}: ${documento}</div>
-      </div>
-      ${alNoNing ? `<div class="allergy-alert">⚠️ ${alergias.join(', ')}</div>` : ''}
-    </div>`;
-  bloque.style.display = 'block';
-  clearFieldError('cita-paciente');
-}
-
-function onPrioridadChange() {
-  const val = document.getElementById('cita-prioridad').value;
-  document.getElementById('bloque-justificacion').style.display = val === 'Urgente' ? 'block' : 'none';
-}
-
-function resetFormCita() {
-  document.getElementById('form-cita').reset();
-  document.getElementById('cita-codigo-edit').value = '';
-  document.getElementById('cita-codigo').value = nextId('CITA', DB.get('citas'));
-  document.getElementById('bloque-pac-info').style.display = 'none';
-  document.getElementById('bloque-justificacion').style.display = 'none';
-  document.getElementById('cita-medico').innerHTML = '<option value="">Seleccione especialidad primero</option>';
-  clearAllErrors('form-cita');
-}
-
-// ─── Validación ───────────────────────────────────────────
-function validarFormCita() {
-  clearAllErrors('form-cita');
-  let ok = true;
-  const editCodigo   = document.getElementById('cita-codigo-edit').value;
-  const paciente     = document.getElementById('cita-paciente').value;
-  const especialidad = document.getElementById('cita-especialidad').value;
-  const medico       = document.getElementById('cita-medico').value;
-  const fecha        = document.getElementById('cita-fecha').value;
-  const hora         = document.getElementById('cita-hora').value;
-  const prioridad    = document.getElementById('cita-prioridad').value;
-  const motivo       = document.getElementById('cita-motivo').value.trim();
-  const justific     = document.getElementById('cita-justificacion').value.trim();
-
-  if (!paciente)     { showFieldError('cita-paciente',    'Seleccione un paciente');         ok = false; }
-  if (!especialidad) { showFieldError('cita-especialidad','Seleccione la especialidad');      ok = false; }
-  if (!medico)       { showFieldError('cita-medico',      'Seleccione el médico');            ok = false; }
-  if (!fecha)        { showFieldError('cita-fecha',       'La fecha es obligatoria');         ok = false; }
-  else if (fecha < todayStr()) { showFieldError('cita-fecha', 'No se permiten fechas pasadas'); ok = false; }
-  if (!hora)         { showFieldError('cita-hora',        'Seleccione la hora');              ok = false; }
-  if (!prioridad)    { showFieldError('cita-prioridad',   'Seleccione la prioridad');         ok = false; }
-  if (prioridad === 'Urgente' && justific.length < 10) { showFieldError('cita-justificacion', 'La justificación debe tener mínimo 10 caracteres'); ok = false; }
-  if (!motivo || motivo.length < 10) { showFieldError('cita-motivo', 'El motivo debe tener mínimo 10 caracteres'); ok = false; }
-  else if (motivo.length > 200)      { showFieldError('cita-motivo', 'Máximo 200 caracteres'); ok = false; }
-
-  if (ok) {
-    const citas = DB.get('citas');
-    const dup1 = citas.some(c => c.codigo !== editCodigo && c.medico === medico && c.fecha === fecha && c.hora === hora && !['Cancelada', 'No asistió'].includes(c.estado));
-    if (dup1) { showFieldError('cita-hora', 'El médico ya tiene una cita en ese horario'); ok = false; }
-    const dup2 = citas.some(c => c.codigo !== editCodigo && c.paciente === paciente && c.fecha === fecha && c.hora === hora && !['Cancelada', 'No asistió'].includes(c.estado));
-    if (dup2) { showFieldError('cita-hora', 'El paciente ya tiene una cita en ese horario'); ok = false; }
+function generarHorarios() {
+  const sel = document.getElementById('cita-hora');
+  if (!sel) return;
+  while (sel.options.length > 1) sel.remove(1);
+  for (let h = 8; h < 18; h++) {
+    ['00', '30'].forEach(m => {
+      const o = document.createElement('option');
+      o.value = o.textContent = `${String(h).padStart(2,'0')}:${m}`;
+      sel.appendChild(o);
+    });
   }
-  return ok;
 }
 
-function guardarCita() {
-  if (!validarFormCita()) { showToast('Corrija los errores', 'error'); return; }
-  const editCodigo = document.getElementById('cita-codigo-edit').value;
-  const cita = {
-    codigo:        editCodigo || nextId('CITA', DB.get('citas')),
-    paciente:      document.getElementById('cita-paciente').value,
-    especialidad:  document.getElementById('cita-especialidad').value,
-    medico:        document.getElementById('cita-medico').value,
-    fecha:         document.getElementById('cita-fecha').value,
-    hora:          document.getElementById('cita-hora').value,
-    prioridad:     document.getElementById('cita-prioridad').value,
-    motivo:        document.getElementById('cita-motivo').value.trim(),
-    justificacion: document.getElementById('cita-justificacion').value.trim(),
-    estado:        editCodigo ? DB.get('citas').find(c => c.codigo === editCodigo)?.estado || 'Programada' : 'Programada',
-    creadaEn:      new Date().toISOString(),
-  };
-  const citas = DB.get('citas');
-  if (editCodigo) {
-    const idx = citas.findIndex(c => c.codigo === editCodigo);
-    if (idx >= 0) citas[idx] = cita;
-    showToast('Cita actualizada', 'success');
-  } else {
-    citas.push(cita);
-    showToast('Cita registrada exitosamente', 'success');
-  }
-  DB.set('citas', citas);
-  closeModal('modal-cita');
-  renderCitas();
-  updateStats();
-}
-
-// ─── Render ───────────────────────────────────────────────
+// ─── Renderizar listado ────────────────────────────────────────
 function renderCitas() {
-  const q    = (document.getElementById('f-buscar').value || '').toLowerCase();
-  const fF   = document.getElementById('f-fecha').value;
-  const fE   = document.getElementById('f-estado').value;
-  const fEsp = document.getElementById('f-especialidad').value;
-  const fP   = document.getElementById('f-prioridad').value;
+  const q    = (document.getElementById('f-buscar')?.value || '').toLowerCase();
+  const fFec = document.getElementById('f-fecha')?.value || '';
+  const fEst = document.getElementById('f-estado')?.value || '';
+  const fEsp = document.getElementById('f-especialidad')?.value || '';
+  const fPri = document.getElementById('f-prioridad')?.value || '';
 
-  let citas = DB.get('citas').filter(c => {
-    const pac    = getPacienteLocal(c.paciente);
-    const nombre = pac ? `${pac.nombres ?? pac.nombre ?? ''} ${pac.apellidos ?? pac.apellido ?? ''}`.toLowerCase() : '';
-    if (q && !nombre.includes(q) && !c.medico.toLowerCase().includes(q) && !c.codigo.toLowerCase().includes(q)) return false;
-    if (fF  && c.fecha         !== fF)  return false;
-    if (fE  && c.estado        !== fE)  return false;
+  let citas = getCitasLocal().filter(c => {
+    if (fFec && c.fecha !== fFec) return false;
+    if (fEst && c.estado !== fEst) return false;
     if (fEsp && c.especialidad !== fEsp) return false;
-    if (fP  && c.prioridad     !== fP)  return false;
+    if (fPri && c.prioridad !== fPri) return false;
+    if (q) {
+      const pac    = getPacienteLocal(c.paciente);
+      const nombre = pac ? `${pac.nombres} ${pac.apellidos}`.toLowerCase() : '';
+      if (!nombre.includes(q) && !(c.medico || '').toLowerCase().includes(q) && !(c.codigo || '').toLowerCase().includes(q)) return false;
+    }
     return true;
   });
 
-  const priOrd = { Urgente: 0, Preferencial: 1, Normal: 2 };
-  citas.sort((a, b) => priOrd[a.prioridad] - priOrd[b.prioridad] || a.fecha.localeCompare(b.fecha) || a.hora.localeCompare(b.hora));
+  citas.sort((a, b) => {
+    const fd = (b.fecha || '').localeCompare(a.fecha || '');
+    return fd !== 0 ? fd : (a.hora || '').localeCompare(b.hora || '');
+  });
 
   const grid  = document.getElementById('cita-card-grid');
   const empty = document.getElementById('empty-citas');
-  if (!citas.length) { grid.innerHTML = ''; empty.style.display = 'block'; return; }
+
+  if (!citas.length) {
+    grid.innerHTML = '';
+    empty.style.display = 'flex';
+    return;
+  }
   empty.style.display = 'none';
 
   grid.innerHTML = citas.map(c => {
     const pac      = getPacienteLocal(c.paciente);
-    const nombre   = pac
-      ? `${pac.nombres ?? pac.nombre ?? ''} ${pac.apellidos ?? pac.apellido ?? ''}`.trim()
-      : '(Paciente no encontrado)';
-    const alergias = Array.isArray(pac?.alergias) ? pac.alergias : [];
-    const alNoNing = alergias.length && alergias[0] !== 'Ninguna';
-    const priClass = c.prioridad === 'Urgente' ? 'urgente' : c.prioridad === 'Preferencial' ? 'preferencial' : '';
+    const nombre   = pac ? `${pac.nombres} ${pac.apellidos}` : '(Paciente no encontrado)';
+    const priClass = (c.prioridad || '').toLowerCase();
+    const estClass = c.estado === 'En espera'   ? 'espera'
+                   : c.estado === 'En atención' ? 'atencion'
+                   : c.estado === 'No asistió'  ? 'noasistio'
+                   : (c.estado || '').toLowerCase().replace(/\s+/g, '');
+    const alNoNing = pac?.alergias?.length && pac.alergias[0] !== 'Ninguna';
 
-    let acciones = '';
-    if (c.estado === 'Programada') acciones = `<button class="btn btn-success btn-sm" onclick="cambiarEstado('${c.codigo}','Confirmada')">✔ Confirmar</button><button class="btn btn-danger btn-sm" onclick="pedirCancelacion('${c.codigo}')">✕ Cancelar</button>`;
-    if (c.estado === 'Confirmada') acciones = `<button class="btn btn-info btn-sm" onclick="cambiarEstado('${c.codigo}','En espera')">🏥 A sala espera</button><button class="btn btn-danger btn-sm" onclick="pedirCancelacion('${c.codigo}')">✕ Cancelar</button>`;
-    if (c.estado === 'En espera')  acciones = `<a href="sala-espera.html" class="btn btn-outline btn-sm">Ver Sala →</a>`;
-    if (c.estado === 'Programada' || c.estado === 'Confirmada') acciones += `<button class="btn btn-ghost btn-sm" onclick="editarCita('${c.codigo}')">✏️</button>`;
+    let acciones = `<button class="btn btn-ghost btn-sm" onclick="editarCita('${c.id}')">✏️ Editar</button>`;
+
+    if (c.estado === 'Programada' || c.estado === 'Confirmada') {
+      acciones += `<button class="btn btn-outline btn-sm" onclick="confirmarCita('${c.id}')">✅ Confirmar</button>`;
+      acciones += `<button class="btn btn-outline btn-sm" onclick="enviarSala('${c.id}')">🚶 Sala de espera</button>`;
+      acciones += `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="pedirCancelar('${c.id}')">❌ Cancelar</button>`;
+    }
+    if (c.estado === 'Confirmada') {
+      acciones += `<button class="btn btn-outline btn-sm" onclick="enviarSala('${c.id}')">🚶 Sala de espera</button>`;
+    }
 
     return `<div class="cita-card ${priClass}">
       <div class="cita-main">
         <div class="cita-header">
-          <span class="cita-code">${c.codigo}</span>
-          <span class="badge badge-${c.estado.toLowerCase().replace(/ /g,'')} badge-${c.estado==='En espera'?'espera':c.estado==='En atención'?'atencion':c.estado==='No asistió'?'noasistio':c.estado.toLowerCase()}">${c.estado}</span>
-          <span class="badge badge-${c.prioridad.toLowerCase()}">${c.prioridad}</span>
+          <span class="cita-code">${c.codigo || c.id}</span>
+          <span class="badge badge-${estClass}">${c.estado}</span>
+          <span class="badge badge-${priClass}">${c.prioridad}</span>
         </div>
         <div class="cita-paciente">${nombre}</div>
         <div class="cita-meta">
@@ -249,87 +126,232 @@ function renderCitas() {
           <span>🏥 ${c.especialidad}</span>
           <span>📅 ${formatDate(c.fecha)}</span>
           <span>🕐 ${c.hora}</span>
+          ${pac ? `<span>🎂 ${pac.edad} años</span>` : ''}
         </div>
-        <div class="cita-motivo">💬 ${c.motivo}</div>
-        ${alNoNing ? `<div class="cita-allergy">⚠️ Alergias: ${alergias.join(', ')}</div>` : ''}
-        ${c.prioridad === 'Urgente' && c.justificacion ? `<div style="font-size:.7rem;color:var(--red);margin-top:.35rem">🚨 ${c.justificacion}</div>` : ''}
+        <div class="cita-motivo">${c.motivo}</div>
+        ${alNoNing ? `<div class="cita-allergy">⚠️ Alergias: ${pac.alergias.join(', ')}</div>` : ''}
       </div>
       <div class="cita-actions">${acciones}</div>
     </div>`;
   }).join('');
-}
 
-function cambiarEstado(codigo, nuevoEstado) {
-  const citas = DB.get('citas');
-  const c = citas.find(x => x.codigo === codigo);
-  if (!c) return;
-  if (nuevoEstado === 'En espera' && c.estado === 'Cancelada') { showToast('No se puede enviar a espera una cita cancelada', 'error'); return; }
-  c.estado = nuevoEstado;
-  if (nuevoEstado === 'En espera') c.horaLlegada = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-  DB.set('citas', citas);
-  showToast(`Estado actualizado: ${nuevoEstado}`, 'success');
-  renderCitas();
   updateStats();
 }
 
-function pedirCancelacion(codigo) {
-  document.getElementById('cita-cancelar-codigo').value = codigo;
-  document.getElementById('motivo-cancelacion').value   = '';
-  clearFieldError('motivo-cancelacion');
-  openModal('modal-cancelar');
-}
-
-function confirmarCancelacion() {
-  const motivo = document.getElementById('motivo-cancelacion').value.trim();
-  if (!motivo) { showFieldError('motivo-cancelacion', 'Ingrese el motivo de cancelación'); return; }
-  const codigo = document.getElementById('cita-cancelar-codigo').value;
-  const citas  = DB.get('citas');
-  const c = citas.find(x => x.codigo === codigo);
-  if (c) { c.estado = 'Cancelada'; c.motivoCancelacion = motivo; }
-  DB.set('citas', citas);
-  closeModal('modal-cancelar');
-  showToast('Cita cancelada', 'warn');
-  renderCitas();
-  updateStats();
-}
-
-async function editarCita(codigo) {
-  const c = DB.get('citas').find(x => x.codigo === codigo);
-  if (!c) return;
-  resetFormCita();
-  await cargarPacientesSelect(c.paciente);
-  document.getElementById('modal-cita-title').textContent     = 'Editar Cita';
-  document.getElementById('cita-codigo-edit').value           = c.codigo;
-  document.getElementById('cita-codigo').value                = c.codigo;
-  document.getElementById('cita-paciente').value              = c.paciente;
-  onPacienteChange();
-  document.getElementById('cita-especialidad').value          = c.especialidad;
-  onEspecialidadChange();
-  setTimeout(() => {
-    document.getElementById('cita-medico').value = c.medico;
-    document.getElementById('cita-hora').value   = c.hora;
-  }, 50);
-  document.getElementById('cita-fecha').value         = c.fecha;
-  document.getElementById('cita-prioridad').value     = c.prioridad;
-  document.getElementById('cita-motivo').value        = c.motivo;
-  document.getElementById('cita-justificacion').value = c.justificacion || '';
-  if (c.prioridad === 'Urgente') document.getElementById('bloque-justificacion').style.display = 'block';
-  openModal('modal-cita');
+function updateStats() {
+  const all  = getCitasLocal();
+  const hoy  = todayStr();
+  document.getElementById('st-total').textContent    = all.length;
+  document.getElementById('st-hoy').textContent      = all.filter(c => c.fecha === hoy).length;
+  document.getElementById('st-espera').textContent   = all.filter(c => c.estado === 'En espera').length;
+  document.getElementById('st-urgentes').textContent = all.filter(c => c.prioridad === 'Urgente' && ['Programada','Confirmada','En espera'].includes(c.estado)).length;
 }
 
 function limpiarFiltros() {
-  ['f-buscar', 'f-fecha', 'f-estado', 'f-especialidad', 'f-prioridad'].forEach(id => {
+  ['f-buscar','f-fecha','f-estado','f-especialidad','f-prioridad'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   renderCitas();
 }
 
-function updateStats() {
-  const citas = DB.get('citas');
-  const today = todayStr();
-  document.getElementById('st-total').textContent    = citas.length;
-  document.getElementById('st-hoy').textContent      = citas.filter(c => c.fecha === today && !['Cancelada', 'No asistió'].includes(c.estado)).length;
-  document.getElementById('st-espera').textContent   = citas.filter(c => c.estado === 'En espera').length;
-  document.getElementById('st-urgentes').textContent = citas.filter(c => c.prioridad === 'Urgente' && !['Cancelada', 'No asistió', 'Atendida'].includes(c.estado)).length;
+// ─── Abrir modal nueva cita ────────────────────────────────────
+function abrirNuevaCita() {
+  clearAllErrors('form-cita');
+  document.getElementById('cita-codigo-edit').value = '';
+  document.getElementById('modal-cita-title').textContent = 'Nueva Cita';
+
+  // Generar código
+  const citas = getCitasLocal();
+  document.getElementById('cita-codigo').value = nextId('CIT', citas);
+
+  // Limpiar campos
+  ['cita-paciente','cita-especialidad','cita-medico','cita-hora','cita-prioridad','cita-motivo','cita-justificacion'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('cita-fecha').value = todayStr();
+  document.getElementById('bloque-pac-info').style.display = 'none';
+  document.getElementById('bloque-justificacion').style.display = 'none';
+  document.getElementById('cita-medico').innerHTML = '<option value="">Seleccione especialidad primero</option>';
+  openModal('modal-cita');
+}
+
+function editarCita(citaId) {
+  const c = getCitasLocal().find(x => String(x.id) === String(citaId));
+  if (!c) return;
+  clearAllErrors('form-cita');
+  document.getElementById('cita-codigo-edit').value   = c.id;
+  document.getElementById('modal-cita-title').textContent = 'Editar Cita';
+  document.getElementById('cita-codigo').value        = c.codigo || c.id;
+  document.getElementById('cita-paciente').value      = String(c.paciente);
+  document.getElementById('cita-fecha').value         = c.fecha;
+  document.getElementById('cita-prioridad').value     = c.prioridad;
+  document.getElementById('cita-motivo').value        = c.motivo;
+  document.getElementById('cita-justificacion').value = c.justificacion || '';
+  document.getElementById('bloque-justificacion').style.display = c.prioridad === 'Urgente' ? 'block' : 'none';
+
+  onEspecialidadChange(c.especialidad);
+  document.getElementById('cita-especialidad').value = c.especialidad;
+  onEspecialidadChange(); // repobla médicos
+  setTimeout(() => {
+    document.getElementById('cita-medico').value = c.medico;
+    document.getElementById('cita-hora').value   = c.hora;
+  }, 50);
+
+  onPacienteChange();
+  openModal('modal-cita');
+}
+
+function onPacienteChange() {
+  const pacId = document.getElementById('cita-paciente').value;
+  const bloque = document.getElementById('bloque-pac-info');
+  const strip  = document.getElementById('pac-info-strip');
+  if (!pacId) { bloque.style.display = 'none'; return; }
+  const pac = getPacienteLocal(pacId);
+  if (!pac) { bloque.style.display = 'none'; return; }
+  const alNoNing = pac.alergias?.length && pac.alergias[0] !== 'Ninguna';
+  strip.innerHTML = `
+    <div style="background:var(--blue-pale);border-radius:var(--radius);padding:.75rem 1rem;display:flex;gap:1.5rem;flex-wrap:wrap;font-size:.78rem">
+      <span>👤 <b>${pac.nombres} ${pac.apellidos}</b></span>
+      <span>🎂 ${pac.edad} años</span>
+      <span>📄 ${pac.documento}</span>
+      <span>📞 ${pac.telefono}</span>
+      ${alNoNing ? `<span style="color:var(--red);font-weight:600">⚠️ Alergias: ${pac.alergias.join(', ')}</span>` : ''}
+    </div>`;
+  bloque.style.display = 'block';
+}
+
+function onEspecialidadChange(forceVal) {
+  const esp = forceVal || document.getElementById('cita-especialidad').value;
+  const sel = document.getElementById('cita-medico');
+  const medicos = MEDICOS_POR_ESPECIALIDAD[esp] || [];
+  sel.innerHTML = '<option value="">Seleccionar médico…</option>';
+  medicos.forEach(m => {
+    const o = document.createElement('option');
+    o.value = o.textContent = m;
+    sel.appendChild(o);
+  });
+  if (!esp) sel.innerHTML = '<option value="">Seleccione especialidad primero</option>';
+}
+
+function onPrioridadChange() {
+  const p = document.getElementById('cita-prioridad').value;
+  document.getElementById('bloque-justificacion').style.display = p === 'Urgente' ? 'block' : 'none';
+}
+
+// ─── Guardar cita ──────────────────────────────────────────────
+async function guardarCita() {
+  if (!validarFormCita()) return;
+
+  const editId      = document.getElementById('cita-codigo-edit').value;
+  const existing    = editId ? getCitasLocal().find(c => String(c.id) === String(editId)) : null;
+
+  const cita = {
+    id:           existing?.id ?? null,
+    codigo:       document.getElementById('cita-codigo').value,
+    paciente:     document.getElementById('cita-paciente').value,
+    medico:       document.getElementById('cita-medico').value,
+    especialidad: document.getElementById('cita-especialidad').value,
+    fecha:        document.getElementById('cita-fecha').value,
+    hora:         document.getElementById('cita-hora').value,
+    estado:       existing?.estado ?? 'Programada',
+    prioridad:    document.getElementById('cita-prioridad').value,
+    motivo:       document.getElementById('cita-motivo').value.trim(),
+    justificacion:document.getElementById('cita-justificacion').value.trim() || null,
+    horaLlegada:       existing?.horaLlegada       ?? null,
+    horaInicioAtencion:existing?.horaInicioAtencion ?? null,
+    horaFin:           existing?.horaFin            ?? null,
+  };
+
+  try {
+    await saveCitaDB(cita);
+    closeModal('modal-cita');
+    renderCitas();
+    showToast(editId ? 'Cita actualizada' : 'Cita registrada', 'success');
+  } catch (e) {
+    showToast('Error al guardar cita: ' + e.message, 'error');
+    console.error(e);
+  }
+}
+
+function validarFormCita() {
+  let ok = true;
+  clearAllErrors('form-cita');
+  const req = [
+    ['cita-paciente',    'Selecciona un paciente'],
+    ['cita-especialidad','Selecciona una especialidad'],
+    ['cita-medico',      'Selecciona un médico'],
+    ['cita-fecha',       'Ingresa la fecha'],
+    ['cita-hora',        'Selecciona la hora'],
+    ['cita-prioridad',   'Selecciona la prioridad'],
+    ['cita-motivo',      'Ingresa el motivo'],
+  ];
+  req.forEach(([id, msg]) => {
+    const val = document.getElementById(id)?.value?.trim();
+    if (!val) { showFieldError(id, msg); ok = false; }
+  });
+  const motivo = document.getElementById('cita-motivo')?.value?.trim();
+  if (motivo && motivo.length < 10) { showFieldError('cita-motivo', 'Mínimo 10 caracteres'); ok = false; }
+  const pri = document.getElementById('cita-prioridad')?.value;
+  if (pri === 'Urgente') {
+    const just = document.getElementById('cita-justificacion')?.value?.trim();
+    if (!just || just.length < 10) { showFieldError('cita-justificacion', 'Mínimo 10 caracteres'); ok = false; }
+  }
+  return ok;
+}
+
+// ─── Confirmar / Enviar sala ───────────────────────────────────
+async function confirmarCita(citaId) {
+  const c = getCitasLocal().find(x => String(x.id) === String(citaId));
+  if (!c) return;
+  try {
+    c.estado = 'Confirmada';
+    await saveCitaDB(c);
+    showToast('Cita confirmada', 'success');
+    renderCitas();
+  } catch (e) {
+    showToast('Error al confirmar cita', 'error');
+  }
+}
+
+async function enviarSala(citaId) {
+  const c = getCitasLocal().find(x => String(x.id) === String(citaId));
+  if (!c) return;
+  try {
+    c.estado      = 'En espera';
+    c.horaLlegada = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+    await saveCitaDB(c);
+    showToast('Paciente enviado a sala de espera', 'success');
+    renderCitas();
+  } catch (e) {
+    showToast('Error al enviar a sala', 'error');
+  }
+}
+
+// ─── Cancelar ─────────────────────────────────────────────────
+function pedirCancelar(citaId) {
+  document.getElementById('cita-cancelar-codigo').value = citaId;
+  document.getElementById('motivo-cancelacion').value   = '';
+  clearFieldError('motivo-cancelacion');
+  openModal('modal-cancelar');
+}
+
+async function confirmarCancelacion() {
+  const citaId  = document.getElementById('cita-cancelar-codigo').value;
+  const motivo  = document.getElementById('motivo-cancelacion').value.trim();
+  if (!motivo) { showFieldError('motivo-cancelacion', 'Ingresa el motivo de cancelación'); return; }
+
+  const c = getCitasLocal().find(x => String(x.id) === String(citaId));
+  if (!c) return;
+  try {
+    c.estado             = 'Cancelada';
+    c.motivoCancelacion  = motivo;
+    await saveCitaDB(c);
+    closeModal('modal-cancelar');
+    showToast('Cita cancelada', 'warn');
+    renderCitas();
+  } catch (e) {
+    showToast('Error al cancelar cita', 'error');
+  }
 }

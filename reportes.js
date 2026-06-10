@@ -3,10 +3,29 @@ let periodoActivo = 'mes';
 let fechaDesde = null;
 let fechaHasta = null;
 
-document.addEventListener('DOMContentLoaded', () => {
+// Datos cargados desde Supabase
+let _rCitas     = [];
+let _rPacientes = [];
+let _rHistorial = [];
+
+document.addEventListener('DOMContentLoaded', async () => {
   initPeriodo();
+  await cargarDatos();
   generarReporte();
 });
+
+async function cargarDatos() {
+  try {
+    [_rCitas, _rPacientes, _rHistorial] = await Promise.all([
+      getCitasCache(),
+      getPacientesCache(),
+      getHistorialCache(),
+    ]);
+  } catch (e) {
+    console.error('Error cargando datos para reportes:', e);
+    showToast('Error al cargar datos', 'error');
+  }
+}
 
 function initPeriodo() {
   const hoy   = new Date();
@@ -39,7 +58,7 @@ function aplicarFiltroFecha() {
 }
 
 function getCitasFiltradas() {
-  return DB.get('citas').filter(c => {
+  return _rCitas.filter(c => {
     if (periodoActivo === 'todo') return true;
     if (fechaDesde && c.fecha < fechaDesde) return false;
     if (fechaHasta && c.fecha > fechaHasta) return false;
@@ -49,8 +68,8 @@ function getCitasFiltradas() {
 
 function generarReporte() {
   const citas = getCitasFiltradas();
-  const hist  = DB.get('historial');
-  const pacs  = DB.get('pacientes');
+  const hist  = _rHistorial;
+  const pacs  = _rPacientes;
 
   // KPI
   document.getElementById('kpi-pacs').textContent        = pacs.length;
@@ -67,18 +86,25 @@ function generarReporte() {
   renderBarChart('chart-prioridades', contarPor(citas, 'prioridad'),
     { Urgente: '#EF4444', Preferencial: '#F59E0B', Normal: '#1565C0' });
   renderTopPacientes('chart-top-pacs', citas, pacs);
-  renderAlergias('chart-alergias', pacs);
+  renderAlergiasChart('chart-alergias', pacs);
   renderTablaDetalle();
 }
 
-// ─── Helpers de conteo ─────────────────────────────────────
+// Botón actualizar recarga datos desde Supabase
+async function actualizarReporte() {
+  await cargarDatos();
+  generarReporte();
+  showToast('Datos actualizados', 'success');
+}
+
+// ─── Helpers de conteo ─────────────────────────────────────────
 function contarPor(arr, campo) {
   const m = {};
   arr.forEach(x => { const v = x[campo] || 'Sin dato'; m[v] = (m[v] || 0) + 1; });
   return Object.entries(m).sort((a, b) => b[1] - a[1]);
 }
 
-// ─── Bar chart manual ─────────────────────────────────────
+// ─── Bar chart manual ─────────────────────────────────────────
 function renderBarChart(containerId, data, color = '#1565C0') {
   const el = document.getElementById(containerId);
   if (!data.length) {
@@ -98,7 +124,7 @@ function renderBarChart(containerId, data, color = '#1565C0') {
   }).join('');
 }
 
-// ─── Donut SVG ─────────────────────────────────────────────
+// ─── Donut SVG ─────────────────────────────────────────────────
 function renderDonut(svgId, legendId, data, colors) {
   const svgEl    = document.getElementById(svgId);
   const legendEl = document.getElementById(legendId);
@@ -113,31 +139,26 @@ function renderDonut(svgId, legendId, data, colors) {
     legendEl.innerHTML = '<div style="font-size:.75rem;color:var(--gray-400)">Sin datos</div>';
     return;
   }
-
   const R = 60, cx = 70, cy = 70, strokeW = 22;
   const circ = 2 * Math.PI * R;
-  let offset = 0;
-  let paths  = '';
-
+  let offset = 0, paths = '';
   data.forEach(([label, val], i) => {
     const pct    = val / total;
     const dash   = (pct * circ).toFixed(2);
     const gap    = (circ - pct * circ).toFixed(2);
     const rotate = (offset / total * 360 - 90).toFixed(2);
-    paths += `<circle cx="${cx}" cy="${cy}" r="${R}"
-      fill="none" stroke="${colors[i % colors.length]}" stroke-width="${strokeW}"
+    paths += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none"
+      stroke="${colors[i % colors.length]}" stroke-width="${strokeW}"
       stroke-dasharray="${dash} ${gap}"
       transform="rotate(${rotate} ${cx} ${cy})"/>`;
     offset += val;
   });
-
   svgEl.innerHTML = `<svg width="140" height="140" viewBox="0 0 140 140">
     <circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--gray-100)" stroke-width="${strokeW}"/>
     ${paths}
     <text x="${cx}" y="${cy - 6}" text-anchor="middle" font-size="18" font-weight="800" fill="var(--gray-900)">${total}</text>
     <text x="${cx}" y="${cy + 12}" text-anchor="middle" font-size="9" fill="var(--gray-400)">TOTAL</text>
   </svg>`;
-
   legendEl.innerHTML = data.slice(0, 7).map(([label, val], i) => `
     <div class="legend-item">
       <div class="legend-dot" style="background:${colors[i % colors.length]}"></div>
@@ -146,7 +167,7 @@ function renderDonut(svgId, legendId, data, colors) {
     </div>`).join('');
 }
 
-// ─── Ranking médicos ───────────────────────────────────────
+// ─── Ranking médicos ───────────────────────────────────────────
 function renderRanking(containerId, data) {
   const el = document.getElementById(containerId);
   if (!data.length) {
@@ -162,7 +183,7 @@ function renderRanking(containerId, data) {
     </div>`).join('');
 }
 
-// ─── Top pacientes ─────────────────────────────────────────
+// ─── Top pacientes ─────────────────────────────────────────────
 function renderTopPacientes(containerId, citas, pacs) {
   const el  = document.getElementById(containerId);
   const map = {};
@@ -174,7 +195,7 @@ function renderTopPacientes(containerId, citas, pacs) {
   }
   const posClasses = ['gold', 'silver', 'bronze'];
   el.innerHTML = sorted.map(([cod, val], i) => {
-    const pac    = pacs.find(p => p.codigo === cod);
+    const pac    = pacs.find(p => String(p.id) === String(cod) || String(p.codigo) === String(cod));
     const nombre = pac ? `${pac.nombres} ${pac.apellidos}` : 'Paciente eliminado';
     return `<div class="rank-item">
       <div class="rank-pos ${posClasses[i] || ''}">${i + 1}</div>
@@ -184,8 +205,8 @@ function renderTopPacientes(containerId, citas, pacs) {
   }).join('');
 }
 
-// ─── Alergias ──────────────────────────────────────────────
-function renderAlergias(containerId, pacs) {
+// ─── Alergias ──────────────────────────────────────────────────
+function renderAlergiasChart(containerId, pacs) {
   const map = {};
   pacs.forEach(p => {
     (p.alergias || []).forEach(a => {
@@ -200,17 +221,17 @@ function renderAlergias(containerId, pacs) {
   renderBarChart(containerId, data, Object.fromEntries(data.map(([k], i) => [k, colors[i % colors.length]])));
 }
 
-// ─── Tabla detalle ─────────────────────────────────────────
+// ─── Tabla detalle ─────────────────────────────────────────────
 function renderTablaDetalle() {
   const q   = (document.getElementById('r-buscar').value || '').toLowerCase();
   const fE  = document.getElementById('r-estado-tabla').value;
   const citas = getCitasFiltradas().filter(c => {
-    const pac    = getPaciente(c.paciente);
+    const pac    = getPacienteLocal(c.paciente);
     const nombre = pac ? `${pac.nombres} ${pac.apellidos}`.toLowerCase() : '';
-    if (q && !nombre.includes(q) && !c.codigo.toLowerCase().includes(q) && !c.medico.toLowerCase().includes(q)) return false;
+    if (q && !nombre.includes(q) && !(c.codigo || '').toLowerCase().includes(q) && !(c.medico || '').toLowerCase().includes(q)) return false;
     if (fE && c.estado !== fE) return false;
     return true;
-  }).sort((a, b) => b.fecha.localeCompare(a.fecha));
+  }).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
 
   const tbody = document.getElementById('tbody-reporte');
   if (!citas.length) {
@@ -218,12 +239,12 @@ function renderTablaDetalle() {
     return;
   }
   tbody.innerHTML = citas.map(c => {
-    const pac      = getPaciente(c.paciente);
+    const pac      = getPacienteLocal(c.paciente);
     const nombre   = pac ? `${pac.nombres} ${pac.apellidos}` : '—';
     const estClass = c.estado === 'En espera'   ? 'espera'
                    : c.estado === 'En atención' ? 'atencion'
                    : c.estado === 'No asistió'  ? 'noasistio'
-                   : c.estado.toLowerCase().replace(' ', '');
+                   : (c.estado || '').toLowerCase().replace(' ', '');
     return `<tr>
       <td class="td-code">${c.codigo}</td>
       <td class="td-main">${nombre}</td>
@@ -237,13 +258,13 @@ function renderTablaDetalle() {
   }).join('');
 }
 
-// ─── Exportar CSV ─────────────────────────────────────────
+// ─── Exportar CSV ──────────────────────────────────────────────
 function exportarCSV() {
   const citas  = getCitasFiltradas();
-  const pacs   = DB.get('pacientes');
+  const pacs   = _rPacientes;
   const header = ['Código', 'Paciente', 'DNI', 'Médico', 'Especialidad', 'Fecha', 'Hora', 'Estado', 'Prioridad', 'Motivo'];
   const rows   = citas.map(c => {
-    const pac    = pacs.find(p => p.codigo === c.paciente);
+    const pac    = pacs.find(p => String(p.id) === String(c.paciente) || String(p.codigo) === String(c.paciente));
     const nombre = pac ? `${pac.nombres} ${pac.apellidos}` : '—';
     const dni    = pac?.documento || '—';
     return [c.codigo, nombre, dni, c.medico, c.especialidad, c.fecha, c.hora, c.estado, c.prioridad, `"${(c.motivo || '').replace(/"/g, "'")}"`];

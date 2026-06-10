@@ -1,15 +1,28 @@
+/* ============================================================
+   MediCore — sala-espera.js  (Supabase)
+   ============================================================ */
 const PRIO_ORD = { Urgente: 0, Preferencial: 1, Normal: 2 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await cargarDatosSala();
   cargarMedicosSelect();
   renderSala();
-  setInterval(renderSala, 30000); // auto-refresh cada 30s
+  setInterval(async () => { await cargarDatosSala(); renderSala(); }, 30000);
 });
 
+async function cargarDatosSala() {
+  await Promise.all([
+    getCitasCache(true),
+    getPacientesCache(),
+  ]);
+}
+
 function cargarMedicosSelect() {
-  const citas   = DB.get('citas');
+  const citas   = getCitasLocal();
   const medicos = [...new Set(citas.map(c => c.medico).filter(Boolean))];
   const sel     = document.getElementById('f-medico');
+  // Limpiar opciones previas (excepto la primera)
+  while (sel.options.length > 1) sel.remove(1);
   medicos.forEach(m => {
     const o = document.createElement('option');
     o.value = o.textContent = m;
@@ -22,9 +35,8 @@ function renderSala() {
   const fEsp = document.getElementById('f-especialidad').value;
   const fEst = document.getElementById('f-estado-sala').value;
 
-  let citas = DB.get('citas').filter(c => {
+  let citas = getCitasLocal().filter(c => {
     if (!['En espera', 'En atención', 'Atendida', 'No asistió'].includes(c.estado)) return false;
-    if (c.estado === 'Cancelada') return false;
     if (fMed && c.medico !== fMed) return false;
     if (fEsp && c.especialidad !== fEsp) return false;
     if (fEst && c.estado !== fEst) return false;
@@ -50,9 +62,9 @@ function renderSala() {
   empty.style.display = 'none';
 
   let turnoNum = 0;
-  lista.innerHTML = citas.map((c, i) => {
-    const pac     = getPaciente(c.paciente);
-    const nombre  = pac ? `${pac.nombres} ${pac.apellidos}` : '(Paciente no encontrado)';
+  lista.innerHTML = citas.map((c) => {
+    const pac      = getPacienteLocal(c.paciente);
+    const nombre   = pac ? `${pac.nombres} ${pac.apellidos}` : '(Paciente no encontrado)';
     const priClass = (c.prioridad || '').toLowerCase();
     const alNoNing = pac?.alergias?.length && pac.alergias[0] !== 'Ninguna';
 
@@ -65,17 +77,17 @@ function renderSala() {
     let acciones = '';
     if (c.estado === 'En espera') {
       acciones = `
-        <button class="btn btn-success btn-sm" onclick="pasarAtencion('${c.codigo}')">🩺 Atender</button>
-        <button class="btn btn-danger btn-sm"  onclick="pedirNoAsistio('${c.codigo}')">✗ No asistió</button>`;
+        <button class="btn btn-success btn-sm" onclick="pasarAtencion('${c.id}')">🩺 Atender</button>
+        <button class="btn btn-danger btn-sm"  onclick="pedirNoAsistio('${c.id}')">✗ No asistió</button>`;
     }
     if (c.estado === 'En atención') {
-      acciones = `<button class="btn btn-primary btn-sm" onclick="pedirAtendido('${c.codigo}')">✅ Finalizar</button>`;
+      acciones = `<button class="btn btn-primary btn-sm" onclick="pedirAtendido('${c.id}')">✅ Finalizar</button>`;
     }
     if (c.estado === 'Atendida') {
-      const hist = DB.get('historial').find(h => h.citaCodigo === c.codigo);
+      const hist = getHistorialLocal().find(h => String(h.citaCodigo) === String(c.id) || h.citaCodigo === c.codigo);
       acciones = hist
         ? `<span style="font-size:.7rem;color:var(--green);font-weight:600">📋 Historial registrado</span>`
-        : `<a href="historial.html?cita=${c.codigo}" class="btn btn-outline btn-sm">📋 Registrar historial</a>`;
+        : `<a href="historial.html?cita=${c.id}" class="btn btn-outline btn-sm">📋 Registrar historial</a>`;
     }
 
     const estadoClass = c.estado === 'En atención' ? 'en-atencion' : c.estado === 'Atendida' ? 'atendido' : '';
@@ -84,7 +96,7 @@ function renderSala() {
       <div class="turno-body">
         <div class="turno-header">
           <span class="turno-nombre">${nombre}</span>
-          <span class="badge badge-${c.estado === 'En espera' ? 'espera' : c.estado === 'En atención' ? 'atencion' : c.estado === 'Atendida' ? 'atendida' : c.estado === 'No asistió' ? 'noasistio' : c.estado.toLowerCase()}">${c.estado}</span>
+          <span class="badge badge-${c.estado === 'En espera' ? 'espera' : c.estado === 'En atención' ? 'atencion' : c.estado === 'Atendida' ? 'atendida' : c.estado === 'No asistió' ? 'noasistio' : (c.estado || '').toLowerCase()}">${c.estado}</span>
           <span class="badge badge-${priClass}">${c.prioridad}</span>
         </div>
         <div class="turno-meta">
@@ -98,8 +110,8 @@ function renderSala() {
         ${c.prioridad === 'Urgente' && c.justificacion ? `<div class="turno-justif">🚨 Urgencia: ${c.justificacion}</div>` : ''}
         <div class="turno-tiempos">
           <span class="turno-tiempo-chip">📅 ${formatDate(c.fecha)}</span>
-          ${c.horaLlegada       ? `<span class="turno-tiempo-chip llegada">🚶 Llegó: ${c.horaLlegada}</span>` : ''}
-          ${c.horaInicioAtencion? `<span class="turno-tiempo-chip atencion">🩺 Atención: ${c.horaInicioAtencion}</span>` : ''}
+          ${c.horaLlegada        ? `<span class="turno-tiempo-chip llegada">🚶 Llegó: ${c.horaLlegada}</span>` : ''}
+          ${c.horaInicioAtencion ? `<span class="turno-tiempo-chip atencion">🩺 Atención: ${c.horaInicioAtencion}</span>` : ''}
         </div>
       </div>
       <div class="turno-acciones">${acciones}</div>
@@ -116,11 +128,10 @@ function updateStats(citas) {
 }
 
 function updateSidebar(citas) {
-  // Ticker
   const enAtencion = citas.find(c => c.estado === 'En atención');
   if (enAtencion) {
-    const pac = getPaciente(enAtencion.paciente);
-    document.getElementById('ticker-num').textContent = enAtencion.codigo;
+    const pac = getPacienteLocal(enAtencion.paciente);
+    document.getElementById('ticker-num').textContent = enAtencion.codigo || enAtencion.id;
     document.getElementById('ticker-pac').textContent = pac ? `${pac.nombres} ${pac.apellidos}` : '—';
     document.getElementById('ticker-esp').textContent = `${enAtencion.especialidad} · ${enAtencion.medico}`;
   } else {
@@ -129,7 +140,6 @@ function updateSidebar(citas) {
     document.getElementById('ticker-esp').textContent = '—';
   }
 
-  // Resumen
   const total    = citas.length;
   const espera   = citas.filter(c => c.estado === 'En espera').length;
   const atencion = citas.filter(c => c.estado === 'En atención').length;
@@ -142,7 +152,6 @@ function updateSidebar(citas) {
     <div class="resumen-item"><span class="resumen-label">Atendidos</span><span class="resumen-val" style="color:var(--green)">${atend}</span></div>
     <div class="resumen-item"><span class="resumen-label">No asistió</span><span class="resumen-val" style="color:var(--gray-400)">${noAsist}</span></div>`;
 
-  // Próximos
   const proximos = citas.filter(c => c.estado === 'En espera').slice(0, 3);
   const pEl      = document.getElementById('proximos-lista');
   if (!proximos.length) {
@@ -150,7 +159,7 @@ function updateSidebar(citas) {
     return;
   }
   pEl.innerHTML = proximos.map((c, i) => {
-    const pac    = getPaciente(c.paciente);
+    const pac    = getPacienteLocal(c.paciente);
     const nombre = pac ? `${pac.nombres} ${pac.apellidos}` : '—';
     const priColor = c.prioridad === 'Urgente' ? 'var(--red)' : c.prioridad === 'Preferencial' ? 'var(--orange)' : 'var(--blue)';
     return `<div style="display:flex;align-items:center;gap:.65rem;padding:.65rem 0;border-bottom:1px solid var(--gray-100)">
@@ -163,54 +172,71 @@ function updateSidebar(citas) {
   }).join('');
 }
 
-function pasarAtencion(codigo) {
-  const citas = DB.get('citas');
-  const c     = citas.find(x => x.codigo === codigo);
+async function pasarAtencion(citaId) {
+  const citas = getCitasLocal();
+  const c     = citas.find(x => String(x.id) === String(citaId));
   if (!c) { showToast('Cita no encontrada', 'error'); return; }
   if (c.estado !== 'En espera') { showToast('Solo se puede atender pacientes en espera', 'error'); return; }
-  const yaEnAtencion = citas.find(x => x.codigo !== codigo && x.medico === c.medico && x.estado === 'En atención');
+  const yaEnAtencion = citas.find(x => String(x.id) !== String(citaId) && x.medico === c.medico && x.estado === 'En atención');
   if (yaEnAtencion) { showToast(`El médico ${c.medico} ya tiene un paciente en atención`, 'warn'); return; }
-  c.estado = 'En atención';
-  c.horaInicioAtencion = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-  DB.set('citas', citas);
-  showToast('Paciente en atención', 'success');
-  renderSala();
+
+  try {
+    c.estado = 'En atención';
+    c.horaInicioAtencion = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+    await saveCitaDB(c);
+    showToast('Paciente en atención', 'success');
+    renderSala();
+  } catch (e) {
+    showToast('Error al actualizar cita', 'error');
+    console.error(e);
+  }
 }
 
-function pedirNoAsistio(codigo) {
-  document.getElementById('noasistio-codigo').value = codigo;
+function pedirNoAsistio(citaId) {
+  document.getElementById('noasistio-codigo').value = citaId;
   openModal('modal-noasistio');
 }
 
-function confirmarNoAsistio() {
-  const codigo = document.getElementById('noasistio-codigo').value;
-  const citas  = DB.get('citas');
-  const c      = citas.find(x => x.codigo === codigo);
-  if (c) c.estado = 'No asistió';
-  DB.set('citas', citas);
-  closeModal('modal-noasistio');
-  showToast('Marcado como No asistió', 'warn');
-  renderSala();
+async function confirmarNoAsistio() {
+  const citaId = document.getElementById('noasistio-codigo').value;
+  const citas  = getCitasLocal();
+  const c      = citas.find(x => String(x.id) === String(citaId));
+  if (!c) { showToast('Cita no encontrada', 'error'); return; }
+  try {
+    c.estado = 'No asistió';
+    await saveCitaDB(c);
+    closeModal('modal-noasistio');
+    showToast('Marcado como No asistió', 'warn');
+    renderSala();
+  } catch (e) {
+    showToast('Error al actualizar cita', 'error');
+    console.error(e);
+  }
 }
 
-function pedirAtendido(codigo) {
-  document.getElementById('atendido-codigo').value = codigo;
+function pedirAtendido(citaId) {
+  document.getElementById('atendido-codigo').value = citaId;
   document.getElementById('btn-ir-historial').style.display = 'none';
   openModal('modal-a-historial');
 }
 
-function confirmarAtendido() {
-  const codigo = document.getElementById('atendido-codigo').value;
-  const citas  = DB.get('citas');
-  const c      = citas.find(x => x.codigo === codigo);
+async function confirmarAtendido() {
+  const citaId = document.getElementById('atendido-codigo').value;
+  const citas  = getCitasLocal();
+  const c      = citas.find(x => String(x.id) === String(citaId));
   if (!c) { showToast('Cita no encontrada', 'error'); return; }
   if (c.estado !== 'En atención') { showToast('Solo se puede finalizar pacientes en atención', 'error'); return; }
-  c.estado  = 'Atendida';
-  c.horaFin = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-  DB.set('citas', citas);
-  const btnH     = document.getElementById('btn-ir-historial');
-  btnH.href      = `historial.html?cita=${codigo}`;
-  btnH.style.display = 'inline-flex';
-  showToast('Consulta finalizada. Registra el historial clínico.', 'success');
-  renderSala();
+  try {
+    c.estado  = 'Atendida';
+    c.horaFin = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+    await saveCitaDB(c);
+    const btnH    = document.getElementById('btn-ir-historial');
+    btnH.href     = `historial.html?cita=${citaId}`;
+    btnH.style.display = 'inline-flex';
+    showToast('Consulta finalizada. Registra el historial clínico.', 'success');
+    renderSala();
+  } catch (e) {
+    showToast('Error al finalizar cita', 'error');
+    console.error(e);
+  }
 }
