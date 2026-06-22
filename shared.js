@@ -16,9 +16,13 @@ const SB_HEADERS = {
 
 // Helper base para fetch a Supabase REST
 async function sbFetch(path, options = {}) {
+  const session = DB.getObj('session');
+  const authHeaders = session?.access_token
+    ? { Authorization: `Bearer ${session.access_token}` }
+    : {};
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
-    headers: { ...SB_HEADERS, ...(options.headers || {}) },
+    headers: { ...SB_HEADERS, ...authHeaders, ...(options.headers || {}) },
   });
   if (!res.ok) {
     const err = await res.text();
@@ -189,7 +193,7 @@ let _cacheSalaEspera  = null;
 function normalizarPaciente(p) {
   return {
     id:              p.id,
-    codigo:          String(p.id),
+    codigo:          p.codigo ?? `PAC-${String(p.id).padStart(3, '0')}`,
     nombres:         p.nombres   ?? p.Nombres   ?? '',
     apellidos:       p.apellidos ?? p.Apellidos  ?? '',
     documento:       String(p.documento ?? p['N° documento'] ?? ''),
@@ -201,9 +205,13 @@ function normalizarPaciente(p) {
     edad:            calcAge(p.fecha_nacimiento ?? p['Fecha de nacimiento'] ?? null),
     tipoDoc:         p.tipo_documento ?? 'DNI',
     alergias:        Array.isArray(p.alergias) ? p.alergias : [],
-    tutor:           p.tutor           ?? null,
-    contactoEmerg:   p.contacto_emergencia ?? null,
-    creadoEn:        p.created_at ?? null,
+    tutor:           p.tutor ?? null,
+    contactoEmerg:   p.contacto_emergencia ?? {
+      nombre:     p.contacto_emergencia_nombre ?? '',
+      parentesco: p.contacto_emergencia_parentesco ?? '',
+      telefono:   p.contacto_emergencia_telefono ?? '',
+    },
+    creadoEn:        p.created_at ?? p.fecha_creacion ?? null,
   };
 }
 

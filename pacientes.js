@@ -1,12 +1,29 @@
 /* ============================================================
-   MediCore — pacientes.js  (Supabase)
+   MediCore - pacientes.js
+   Logica del modulo Pacientes alineada con pacientes.html
    ============================================================ */
 
 document.addEventListener('DOMContentLoaded', async () => {
+  if (typeof isSessionValid === 'function' && !isSessionValid()) return;
+
+  bindPacienteUI();
   await cargarPacientes();
   renderStats();
-  renderLista();
+  renderTable();
+  renderRecientes();
 });
+
+function bindPacienteUI() {
+  document.querySelectorAll('[data-paciente-nuevo]').forEach(btn => {
+    btn.addEventListener('click', abrirNuevo);
+  });
+
+  document.getElementById('btn-guardar-paciente')?.addEventListener('click', guardarPaciente);
+
+  document.querySelectorAll('.alergia-pill input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => onAlergiaChange(cb));
+  });
+}
 
 async function cargarPacientes() {
   try {
@@ -17,202 +34,317 @@ async function cargarPacientes() {
   }
 }
 
-// ─── Stats ─────────────────────────────────────────────────────
-function renderStats() {
-  const pacs = getAllPacientes();
-  const hoy  = todayStr();
-  const nuevosHoy = pacs.filter(p => (p.creadoEn || '').startsWith(hoy)).length;
-  const menores   = pacs.filter(p => isMinor(p.fechaNacimiento)).length;
-  const conAlerg  = pacs.filter(p => p.alergias?.length && p.alergias[0] !== 'Ninguna').length;
+function getPacientesFiltrados() {
+  const q = (document.getElementById('search-pac')?.value || '').trim().toLowerCase();
+  const filtroAlergia = document.getElementById('filter-alergia')?.value || '';
 
-  const elTotal    = document.getElementById('st-total');
-  const elNuevos   = document.getElementById('st-nuevos');
-  const elMenores  = document.getElementById('st-menores');
-  const elAlergias = document.getElementById('st-alergias');
-
-  if (elTotal)    animateCount(elTotal, pacs.length);
-  if (elNuevos)   animateCount(elNuevos, nuevosHoy);
-  if (elMenores)  animateCount(elMenores, menores);
-  if (elAlergias) animateCount(elAlergias, conAlerg);
+  return getAllPacientes().filter(p => {
+    const texto = `${p.codigo} ${p.nombres} ${p.apellidos} ${p.documento}`.toLowerCase();
+    const tieneAlergias = Array.isArray(p.alergias) && p.alergias.length > 0 && p.alergias[0] !== 'Ninguna';
+    if (q && !texto.includes(q)) return false;
+    if (filtroAlergia === 'si' && !tieneAlergias) return false;
+    if (filtroAlergia === 'no' && tieneAlergias) return false;
+    return true;
+  });
 }
 
-// ─── Lista lateral ─────────────────────────────────────────────
-function renderLista(query = '') {
-  const q    = query.toLowerCase();
-  const pacs = getAllPacientes().filter(p => {
-    if (!q) return true;
-    const full = `${p.nombres} ${p.apellidos} ${p.documento}`.toLowerCase();
-    return full.includes(q);
-  });
+function renderStats() {
+  const pacs = getAllPacientes();
+  const menores = pacs.filter(p => isMinor(p.fechaNacimiento)).length;
+  const adultos = pacs.length - menores;
+  const conAlergias = pacs.filter(p => p.alergias?.length && p.alergias[0] !== 'Ninguna').length;
 
-  const el = document.getElementById('patient-list');
-  if (!el) return;
+  animateCount(document.getElementById('st-total'), pacs.length);
+  animateCount(document.getElementById('st-adultos'), adultos);
+  animateCount(document.getElementById('st-menores'), menores);
+  animateCount(document.getElementById('st-alergias'), conAlergias);
+}
 
+function renderTable() {
+  const tbody = document.getElementById('tbody-pac');
+  const empty = document.getElementById('empty-pac');
+  const tabla = document.getElementById('tabla-pacientes');
+  if (!tbody) return;
+
+  const pacs = getPacientesFiltrados();
   if (!pacs.length) {
-    el.innerHTML = '<div style="font-size:.75rem;color:var(--gray-400);padding:1rem;text-align:center">Sin resultados</div>';
+    tbody.innerHTML = '';
+    if (empty) empty.style.display = 'block';
+    if (tabla) tabla.style.display = 'none';
     return;
   }
 
-  el.innerHTML = pacs.slice(0, 50).map(p => {
-    const initials = `${(p.nombres || ' ')[0]}${(p.apellidos || ' ')[0]}`.toUpperCase();
-    return `<div class="patient-list-item" onclick="seleccionarPaciente('${p.id}')">
-      <div class="pli-avatar">${initials}</div>
-      <div style="flex:1;min-width:0">
-        <div class="pli-name">${p.nombres} ${p.apellidos}</div>
-        <div class="pli-meta">${p.tipoDoc} ${p.documento}</div>
-      </div>
-      <span class="pli-code">P-${String(p.id).padStart(3,'0')}</span>
-    </div>`;
+  if (empty) empty.style.display = 'none';
+  if (tabla) tabla.style.display = 'table';
+
+  tbody.innerHTML = pacs.map(p => {
+    const fullName = `${p.nombres} ${p.apellidos}`.trim();
+    const edad = p.edad ?? calcAge(p.fechaNacimiento);
+    return `
+      <tr>
+        <td class="td-code">${p.codigo}</td>
+        <td class="td-main">${fullName || '-'}</td>
+        <td>${p.tipoDoc || 'DNI'} ${p.documento || ''}</td>
+        <td>${edad ?? '-'}${isMinor(p.fechaNacimiento) ? ' <span class="badge badge-preferencial">Menor</span>' : ''}</td>
+        <td>${p.telefono || '-'}</td>
+        <td>${renderAlergias(p.alergias)}</td>
+        <td>
+          <div class="actions">
+            <button type="button" class="btn btn-outline btn-sm" onclick="seleccionarPaciente('${p.id}')">Ver</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="abrirEditar('${p.id}')">Editar</button>
+            <button type="button" class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="pedirEliminar('${p.id}')">Eliminar</button>
+          </div>
+        </td>
+      </tr>`;
   }).join('');
 }
 
-// ─── Seleccionar paciente (detalle) ────────────────────────────
+function renderRecientes() {
+  const el = document.getElementById('lista-recientes');
+  if (!el) return;
+
+  const pacs = [...getAllPacientes()].slice(-8).reverse();
+  if (!pacs.length) {
+    el.innerHTML = '<div style="font-size:.75rem;color:var(--gray-400);padding:1rem;text-align:center">Sin pacientes registrados</div>';
+    return;
+  }
+
+  el.innerHTML = pacs.map(p => {
+    const initials = `${(p.nombres || ' ')[0]}${(p.apellidos || ' ')[0]}`.toUpperCase();
+    return `
+      <div class="patient-list-item" data-paciente-id="${p.id}" onclick="seleccionarPaciente('${p.id}')">
+        <div class="pli-avatar">${initials}</div>
+        <div style="flex:1;min-width:0">
+          <div class="pli-name">${p.nombres} ${p.apellidos}</div>
+          <div class="pli-meta">${p.tipoDoc || 'DNI'} ${p.documento || ''}</div>
+        </div>
+        <span class="pli-code">${p.codigo}</span>
+      </div>`;
+  }).join('');
+}
+
 function seleccionarPaciente(pacId) {
-  // Marcar seleccionado
-  document.querySelectorAll('.patient-list-item').forEach(el => el.classList.remove('selected'));
-  const items = document.querySelectorAll('.patient-list-item');
-  items.forEach(el => {
-    if (el.getAttribute('onclick')?.includes(`'${pacId}'`)) el.classList.add('selected');
+  document.querySelectorAll('.patient-list-item').forEach(el => {
+    el.classList.toggle('selected', String(el.dataset.pacienteId) === String(pacId));
   });
 
   const pac = getPacienteLocal(pacId);
   if (!pac) return;
 
-  const det = document.getElementById('detalle-paciente');
-  if (!det) return;
+  const contacto = pac.contactoEmerg || {};
+  document.getElementById('det-titulo').textContent = `${pac.nombres} ${pac.apellidos}`;
+  document.getElementById('det-codigo').textContent = pac.codigo;
 
-  const citas = getCitasLocal().filter(c => String(c.paciente) === String(pac.id));
-  const ultCita = citas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))[0];
-
-  det.innerHTML = `
-    <div class="card" style="margin-bottom:1rem">
-      <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;flex-wrap:wrap">
-        <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--blue-light));
-          color:white;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;flex-shrink:0">
-          ${`${(pac.nombres||' ')[0]}${(pac.apellidos||' ')[0]}`.toUpperCase()}
-        </div>
-        <div style="flex:1">
-          <div style="font-size:1.05rem;font-weight:700;color:var(--gray-900)">${pac.nombres} ${pac.apellidos}</div>
-          <div style="font-size:.75rem;color:var(--blue);font-weight:600">P-${String(pac.id).padStart(3,'0')}</div>
-        </div>
-        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" onclick="abrirEditar('${pac.id}')">✏️ Editar</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="pedirEliminar('${pac.id}')">🗑️</button>
-        </div>
-      </div>
-
+  const det = document.getElementById('det-contenido');
+  if (det) {
+    det.innerHTML = `
       <div class="detail-grid">
-        <div class="detail-item"><label>Tipo Doc.</label><span>${pac.tipoDoc}</span></div>
-        <div class="detail-item"><label>N° Documento</label><span>${pac.documento}</span></div>
-        <div class="detail-item"><label>Fecha de Nac.</label><span>${formatDate(pac.fechaNacimiento)}</span></div>
-        <div class="detail-item"><label>Edad</label><span>${pac.edad ?? '—'} años${isMinor(pac.fechaNacimiento) ? ' <span style="color:var(--orange);font-size:.65rem;font-weight:600">MENOR</span>' : ''}</span></div>
-        <div class="detail-item"><label>Sexo</label><span>${pac.sexo || '—'}</span></div>
-        <div class="detail-item"><label>Teléfono</label><span>${pac.telefono}</span></div>
-        <div class="detail-item"><label>Correo</label><span>${pac.correo || '—'}</span></div>
-        <div class="detail-item"><label>Dirección</label><span>${pac.direccion || '—'}</span></div>
+        <div class="detail-item"><label>Documento</label><span>${pac.tipoDoc || 'DNI'} ${pac.documento || '-'}</span></div>
+        <div class="detail-item"><label>Fecha de nacimiento</label><span>${formatDate(pac.fechaNacimiento)}</span></div>
+        <div class="detail-item"><label>Edad</label><span>${pac.edad ?? calcAge(pac.fechaNacimiento) ?? '-'} anios</span></div>
+        <div class="detail-item"><label>Telefono</label><span>${pac.telefono || '-'}</span></div>
+        <div class="detail-item"><label>Correo</label><span>${pac.correo || '-'}</span></div>
+        <div class="detail-item"><label>Direccion</label><span>${pac.direccion || '-'}</span></div>
+        <div class="detail-item"><label>Contacto emergencia</label><span>${contacto.nombre || '-'} ${contacto.parentesco ? `(${contacto.parentesco})` : ''}</span></div>
+        <div class="detail-item"><label>Telefono emergencia</label><span>${contacto.telefono || '-'}</span></div>
       </div>
+      <div style="margin-top:1rem">
+        <div class="section-label">Alergias</div>
+        <div>${renderAlergias(pac.alergias)}</div>
+      </div>`;
+  }
 
-      ${pac.alergias?.length && pac.alergias[0] !== 'Ninguna' ? `
-        <div style="margin-top:.85rem">
-          <div style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--gray-400);margin-bottom:.4rem">Alergias</div>
-          ${renderAlergias(pac.alergias)}
-        </div>` : ''}
-
-      <div style="margin-top:.85rem;padding-top:.85rem;border-top:1px solid var(--gray-100);display:flex;gap:1.5rem;flex-wrap:wrap;font-size:.75rem;color:var(--gray-500)">
-        <span>📅 ${citas.length} cita${citas.length !== 1 ? 's' : ''} total${citas.length !== 1 ? 'es' : ''}</span>
-        ${ultCita ? `<span>🕐 Última: ${formatDate(ultCita.fecha)}</span>` : ''}
-      </div>
-    </div>`;
+  const editBtn = document.getElementById('det-btn-editar');
+  if (editBtn) editBtn.onclick = () => abrirEditar(pac.id);
+  openModal('modal-detalle');
 }
 
-// ─── Nuevo / Editar modal ─────────────────────────────────────
+function generarCodigoPaciente(editId = '') {
+  if (editId) return getPacienteLocal(editId)?.codigo || `PAC-${String(editId).padStart(3, '0')}`;
+  return nextId('PAC-', getAllPacientes(), 'codigo');
+}
+
 function abrirNuevo() {
   clearAllErrors('form-paciente');
-  document.getElementById('pac-id-edit').value   = '';
+  document.getElementById('form-paciente')?.reset();
+  document.getElementById('pac-codigo-edit').value = '';
+  document.getElementById('pac-codigo').value = generarCodigoPaciente();
   document.getElementById('modal-pac-title').textContent = 'Nuevo Paciente';
-  document.getElementById('form-paciente').reset();
-  document.getElementById('bloque-tutor').style.display = 'none';
-  openModal('modal-paciente');
+  document.getElementById('bloque-apoderado').style.display = 'none';
+  resetAlergiasUI();
+  openModal('modal-nuevo');
 }
 
 function abrirEditar(pacId) {
   const pac = getPacienteLocal(pacId);
   if (!pac) return;
+
   clearAllErrors('form-paciente');
-  document.getElementById('pac-id-edit').value   = pac.id;
+  document.getElementById('form-paciente')?.reset();
   document.getElementById('modal-pac-title').textContent = 'Editar Paciente';
 
-  // Llenar campos
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
-  set('pac-nombres',   pac.nombres);
-  set('pac-apellidos', pac.apellidos);
-  set('pac-tipo-doc',  pac.tipoDoc || 'DNI');
-  set('pac-doc',       pac.documento);
-  set('pac-fnac',      pac.fechaNacimiento || '');
-  set('pac-sexo',      pac.sexo || '');
-  set('pac-telefono',  pac.telefono);
-  set('pac-correo',    pac.correo || '');
-  set('pac-direccion', pac.direccion || '');
+  setValue('pac-codigo-edit', pac.id);
+  setValue('pac-codigo', pac.codigo);
+  setValue('pac-nombres', pac.nombres);
+  setValue('pac-apellidos', pac.apellidos);
+  setValue('pac-tipo-doc', pac.tipoDoc || 'DNI');
+  setValue('pac-doc', pac.documento);
+  setValue('pac-nacimiento', pac.fechaNacimiento || '');
+  setValue('pac-telefono', pac.telefono);
+  setValue('pac-email', pac.correo || '');
+  setValue('pac-direccion', pac.direccion || '');
+  setValue('pac-emerg-nombre', pac.contactoEmerg?.nombre || '');
+  setValue('pac-emerg-parentesco', pac.contactoEmerg?.parentesco || '');
+  setValue('pac-emerg-tel', pac.contactoEmerg?.telefono || '');
 
-  // Alergias (checkboxes)
-  document.querySelectorAll('.alergia-pill input[type="checkbox"]').forEach(cb => {
-    cb.checked = pac.alergias?.includes(cb.value);
+  resetAlergiasUI();
+  const valoresBase = ['Ninguna', 'Penicilina', 'Ibuprofeno', 'Paracetamol', 'Mariscos', 'Lactosa', 'Polen'];
+  const alergias = Array.isArray(pac.alergias) ? pac.alergias : [];
+  alergias.forEach(alergia => {
+    const base = document.querySelector(`.alergia-pill input[value="${cssEscape(alergia)}"]`);
+    if (base) {
+      base.checked = true;
+    } else if (alergia && !valoresBase.includes(alergia)) {
+      const otro = document.querySelector('.alergia-pill input[value="Otro"]');
+      if (otro) otro.checked = true;
+      setValue('pac-alergia-otro', alergia);
+    }
   });
 
-  onFechaNacChange();
-  openModal('modal-paciente');
+  onTipoDocChange();
+  onNacimientoChange();
+  updateAlergiasUI();
+  openModal('modal-nuevo');
 }
 
-function onFechaNacChange() {
-  const fnac = document.getElementById('pac-fnac')?.value;
-  const bloque = document.getElementById('bloque-tutor');
-  if (bloque) bloque.style.display = isMinor(fnac) ? 'block' : 'none';
+function setValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value ?? '';
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value);
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
+function onTipoDocChange() {
+  const tipo = document.getElementById('pac-tipo-doc')?.value || '';
+  const doc = document.getElementById('pac-doc');
+  const hint = document.getElementById('doc-hint');
+  if (!doc || !hint) return;
+
+  if (tipo === 'DNI') {
+    doc.maxLength = 8;
+    hint.textContent = 'Debe tener 8 digitos';
+  } else if (tipo === 'Pasaporte') {
+    doc.maxLength = 12;
+    hint.textContent = 'Ingresa de 6 a 12 caracteres';
+  } else if (tipo === 'Carnet de extranjeria') {
+    doc.maxLength = 12;
+    hint.textContent = 'Ingresa de 9 a 12 caracteres';
+  } else {
+    doc.maxLength = 15;
+    hint.textContent = 'Seleccione el tipo de documento primero';
+  }
+}
+
+function onNacimientoChange() {
+  const fecha = document.getElementById('pac-nacimiento')?.value;
+  const edad = calcAge(fecha);
+  const display = document.getElementById('pac-edad-display');
+  const bloqueApoderado = document.getElementById('bloque-apoderado');
+
+  if (display) display.textContent = edad === null ? '-' : `${edad} anios`;
+  if (bloqueApoderado) bloqueApoderado.style.display = isMinor(fecha) ? 'block' : 'none';
+}
+
+function onAlergiaChange(changed) {
+  if (changed?.value === 'Ninguna' && changed.checked) {
+    document.querySelectorAll('.alergia-pill input[type="checkbox"]').forEach(cb => {
+      if (cb.value !== 'Ninguna') cb.checked = false;
+    });
+  }
+
+  if (changed?.value !== 'Ninguna' && changed?.checked) {
+    const ninguna = document.querySelector('.alergia-pill input[value="Ninguna"]');
+    if (ninguna) ninguna.checked = false;
+  }
+
+  updateAlergiasUI();
+}
+
+function resetAlergiasUI() {
+  document.querySelectorAll('.alergia-pill input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  setValue('pac-alergia-otro', '');
+  updateAlergiasUI();
+}
+
+function updateAlergiasUI() {
+  const checks = [...document.querySelectorAll('.alergia-pill input[type="checkbox"]:checked')];
+  const otro = checks.some(cb => cb.value === 'Otro');
+  const bloqueOtro = document.getElementById('bloque-otro-alergia');
+  const resumen = document.getElementById('alergias-resumen');
+  const resumenTexto = document.getElementById('alergias-resumen-texto');
+
+  if (bloqueOtro) bloqueOtro.style.display = otro ? 'block' : 'none';
+  if (resumen && resumenTexto) {
+    const valores = getAlergiasSeleccionadas(false);
+    resumen.style.display = valores.length ? 'block' : 'none';
+    resumenTexto.textContent = valores.join(', ');
+  }
+}
+
+function getAlergiasSeleccionadas(includeOtro = true) {
+  const checks = [...document.querySelectorAll('.alergia-pill input[type="checkbox"]:checked')];
+  const valores = checks.map(cb => cb.value).filter(v => v !== 'Otro');
+  const otroChecked = checks.some(cb => cb.value === 'Otro');
+  const otroTexto = document.getElementById('pac-alergia-otro')?.value?.trim();
+  if (includeOtro && otroChecked && otroTexto) valores.push(otroTexto);
+  if (!includeOtro && otroChecked) valores.push(otroTexto || 'Otro');
+  return valores;
 }
 
 async function guardarPaciente() {
   if (!validarFormPaciente()) return;
 
-  const editId = document.getElementById('pac-id-edit').value;
-
-  // Recoger alergias seleccionadas
-  const alergias = [...document.querySelectorAll('.alergia-pill input[type="checkbox"]:checked')].map(cb => cb.value);
-
+  const editId = document.getElementById('pac-codigo-edit')?.value || '';
   const payload = {
-    nombres:          document.getElementById('pac-nombres').value.trim(),
-    apellidos:        document.getElementById('pac-apellidos').value.trim(),
-    tipo_documento:   document.getElementById('pac-tipo-doc')?.value || 'DNI',
-    documento:        document.getElementById('pac-doc').value.trim(),
-    fecha_nacimiento: document.getElementById('pac-fnac').value || null,
-    sexo:             document.getElementById('pac-sexo')?.value || null,
-    telefono:         document.getElementById('pac-telefono').value.trim(),
-    correo:           document.getElementById('pac-correo')?.value?.trim() || null,
-    direccion:        document.getElementById('pac-direccion')?.value?.trim() || null,
-    alergias:         alergias,
+    codigo: document.getElementById('pac-codigo')?.value || generarCodigoPaciente(editId),
+    nombres: document.getElementById('pac-nombres').value.trim(),
+    apellidos: document.getElementById('pac-apellidos').value.trim(),
+    tipo_documento: document.getElementById('pac-tipo-doc').value,
+    documento: document.getElementById('pac-doc').value.trim(),
+    fecha_nacimiento: document.getElementById('pac-nacimiento').value,
+    telefono: document.getElementById('pac-telefono').value.trim(),
+    correo: document.getElementById('pac-email')?.value?.trim() || null,
+    direccion: document.getElementById('pac-direccion')?.value?.trim() || null,
+    alergias: getAlergiasSeleccionadas(true),
+    contacto_emergencia_nombre: document.getElementById('pac-emerg-nombre').value.trim(),
+    contacto_emergencia_parentesco: document.getElementById('pac-emerg-parentesco').value,
+    contacto_emergencia_telefono: document.getElementById('pac-emerg-tel').value.trim(),
   };
 
   try {
+    let saved;
     if (editId) {
-      const [updated] = await sbFetch(`pacientes?id=eq.${editId}`, {
-        method: 'PATCH', body: JSON.stringify(payload),
+      [saved] = await sbFetch(`pacientes?id=eq.${encodeURIComponent(editId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
       });
-      // Actualizar cache
-      await getPacientesCache(true);
-      closeModal('modal-paciente');
-      renderLista();
-      renderStats();
-      seleccionarPaciente(editId);
-      showToast('Paciente actualizado', 'success');
     } else {
-      const [inserted] = await sbFetch('pacientes', {
-        method: 'POST', body: JSON.stringify(payload),
+      [saved] = await sbFetch('pacientes', {
+        method: 'POST',
+        body: JSON.stringify(payload),
       });
-      await getPacientesCache(true);
-      closeModal('modal-paciente');
-      renderLista();
-      renderStats();
-      if (inserted?.id) seleccionarPaciente(inserted.id);
-      showToast('Paciente registrado', 'success');
     }
+
+    await getPacientesCache(true);
+    closeModal('modal-nuevo');
+    renderStats();
+    renderTable();
+    renderRecientes();
+    showToast(editId ? 'Paciente actualizado' : 'Paciente registrado', 'success');
+    if (saved?.id) seleccionarPaciente(saved.id);
   } catch (e) {
     showToast('Error al guardar paciente: ' + e.message, 'error');
     console.error(e);
@@ -222,41 +354,99 @@ async function guardarPaciente() {
 function validarFormPaciente() {
   let ok = true;
   clearAllErrors('form-paciente');
-  [
-    ['pac-nombres',   'Ingresa los nombres'],
+
+  const required = [
+    ['pac-nombres', 'Ingresa los nombres'],
     ['pac-apellidos', 'Ingresa los apellidos'],
-    ['pac-doc',       'Ingresa el número de documento'],
-    ['pac-fnac',      'Ingresa la fecha de nacimiento'],
-    ['pac-telefono',  'Ingresa el teléfono'],
-  ].forEach(([id, msg]) => {
+    ['pac-tipo-doc', 'Selecciona el tipo de documento'],
+    ['pac-doc', 'Ingresa el numero de documento'],
+    ['pac-nacimiento', 'Ingresa la fecha de nacimiento'],
+    ['pac-telefono', 'Ingresa el telefono'],
+    ['pac-emerg-nombre', 'Ingresa el contacto de emergencia'],
+    ['pac-emerg-parentesco', 'Selecciona el parentesco'],
+    ['pac-emerg-tel', 'Ingresa el telefono de emergencia'],
+  ];
+
+  required.forEach(([id, msg]) => {
     const val = document.getElementById(id)?.value?.trim();
     if (!val) { showFieldError(id, msg); ok = false; }
   });
+
+  const tipoDoc = document.getElementById('pac-tipo-doc')?.value;
   const doc = document.getElementById('pac-doc')?.value?.trim();
-  if (doc && !/^\d{8}$/.test(doc)) { showFieldError('pac-doc', 'El DNI debe tener 8 dígitos'); ok = false; }
+  if (tipoDoc === 'DNI' && doc && !/^\d{8}$/.test(doc)) {
+    showFieldError('pac-doc', 'El DNI debe tener 8 digitos');
+    ok = false;
+  }
+  if (tipoDoc && tipoDoc !== 'DNI' && doc && doc.length < 6) {
+    showFieldError('pac-doc', 'El documento debe tener al menos 6 caracteres');
+    ok = false;
+  }
+
+  const fecha = document.getElementById('pac-nacimiento')?.value;
+  if (fecha && new Date(fecha + 'T00:00:00') > new Date()) {
+    showFieldError('pac-nacimiento', 'La fecha no puede ser futura');
+    ok = false;
+  }
+
   const tel = document.getElementById('pac-telefono')?.value?.trim();
-  if (tel && !/^\d{9}$/.test(tel)) { showFieldError('pac-telefono', 'El teléfono debe tener 9 dígitos'); ok = false; }
+  if (tel && !/^\d{9}$/.test(tel)) {
+    showFieldError('pac-telefono', 'El telefono debe tener 9 digitos');
+    ok = false;
+  }
+
+  const telEmerg = document.getElementById('pac-emerg-tel')?.value?.trim();
+  if (telEmerg && !/^\d{9}$/.test(telEmerg)) {
+    showFieldError('pac-emerg-tel', 'El telefono debe tener 9 digitos');
+    ok = false;
+  }
+
+  const email = document.getElementById('pac-email')?.value?.trim();
+  if (email && !Validate.email(email)) {
+    showFieldError('pac-email', 'Ingresa un correo valido');
+    ok = false;
+  }
+
+  const alergias = getAlergiasSeleccionadas(true);
+  const otroChecked = document.querySelector('.alergia-pill input[value="Otro"]')?.checked;
+  if (!alergias.length && !otroChecked) {
+    showFieldError('alergias', 'Selecciona al menos una opcion');
+    ok = false;
+  }
+  if (otroChecked && !document.getElementById('pac-alergia-otro')?.value?.trim()) {
+    showFieldError('pac-alergia-otro', 'Especifica la alergia');
+    ok = false;
+  }
+
+  if (isMinor(fecha)) {
+    if (!document.getElementById('pac-apoderado')?.value?.trim()) {
+      showFieldError('pac-apoderado', 'Ingresa el nombre del apoderado');
+      ok = false;
+    }
+    if (!document.getElementById('pac-parentesco-apoderado')?.value) {
+      showFieldError('pac-parentesco-apoderado', 'Selecciona el parentesco');
+      ok = false;
+    }
+  }
+
   return ok;
 }
 
-// ─── Eliminar ─────────────────────────────────────────────────
-function pedirEliminar(pacId) {
-  document.getElementById('pac-eliminar-id').value = pacId;
-  openModal('modal-eliminar');
-}
+async function pedirEliminar(pacId) {
+  const pac = getPacienteLocal(pacId);
+  if (!pac) return;
+  if (!confirm(`Eliminar a ${pac.nombres} ${pac.apellidos}?`)) return;
 
-async function confirmarEliminar() {
-  const pacId = document.getElementById('pac-eliminar-id').value;
   try {
-    await sbFetch(`pacientes?id=eq.${pacId}`, { method: 'DELETE' });
+    await sbFetch(`pacientes?id=eq.${encodeURIComponent(pacId)}`, { method: 'DELETE' });
     await getPacientesCache(true);
-    closeModal('modal-eliminar');
-    const det = document.getElementById('detalle-paciente');
-    if (det) det.innerHTML = '<div class="empty-state"><div class="empty-icon">👤</div><div class="empty-sub">Selecciona un paciente</div></div>';
-    renderLista();
     renderStats();
+    renderTable();
+    renderRecientes();
+    closeModal('modal-detalle');
     showToast('Paciente eliminado', 'warn');
   } catch (e) {
     showToast('Error al eliminar paciente: ' + e.message, 'error');
+    console.error(e);
   }
 }
